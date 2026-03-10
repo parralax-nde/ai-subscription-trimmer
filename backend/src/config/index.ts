@@ -50,4 +50,19 @@ export const config = {
     maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS ?? '100', 10),
     authMaxRequests: parseInt(process.env.AUTH_RATE_LIMIT_MAX_REQUESTS ?? '10', 10),
   },
+
+  oauth: {
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID ?? '',
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+      redirectUri: process.env.GOOGLE_REDIRECT_URI ?? 'http://localhost:3000/api/auth/google/callback',
+    },
+    apple: {
+      clientId: process.env.APPLE_CLIENT_ID ?? '',
+      teamId: process.env.APPLE_TEAM_ID ?? '',
+      keyId: process.env.APPLE_KEY_ID ?? '',
+      privateKey: (process.env.APPLE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
+      redirectUri: process.env.APPLE_REDIRECT_URI ?? 'http://localhost:3000/api/auth/apple/callback',
+    },
+  },
 };

@@ -126,7 +126,9 @@ export async function loginUser(
   const DUMMY_HASH =
     '$argon2id$v=19$m=65536,t=3,p=4$dummysaltdummysaltdummysa$dummyhashvaluefortimingatttack';
 
-  const hashToVerify = user ? user.passwordHash : DUMMY_HASH;
+  // Social-only users (no password set) cannot log in with a password.
+  // Use DUMMY_HASH to keep timing consistent and avoid revealing account existence.
+  const hashToVerify = user?.passwordHash ?? DUMMY_HASH;
 
   let passwordValid = false;
   try {

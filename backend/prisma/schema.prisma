@@ -13,8 +13,10 @@ datasource db {
 model User {
   id                String    @id @default(uuid())
   email             String    @unique
-  passwordHash      String
+  passwordHash      String?
   isEmailVerified   Boolean   @default(false)
+  googleId          String?   @unique
+  appleId           String?   @unique
   mfaEnabled        Boolean   @default(false)
   mfaTotpSecret     String?
   createdAt         DateTime  @default(now())

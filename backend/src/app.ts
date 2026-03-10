@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import { generalRateLimiter } from './middleware/rateLimiter';
 import authRouter from './routes/auth';
+import socialAuthRouter from './routes/socialAuth';
 
 export const app = express();
 
@@ -35,6 +36,7 @@ app.get('/health', (_req: Request, res: Response) => {
 
 // API routes
 app.use('/api/auth', authRouter);
+app.use('/api/auth', socialAuthRouter);
 
 // 404 handler
 app.use((_req: Request, res: Response) => {
