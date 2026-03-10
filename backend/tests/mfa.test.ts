@@ -6,9 +6,9 @@
  * TOTP verification is tested via the @otplib/preset-default library.
  */
 
+import crypto from 'crypto';
 import request from 'supertest';
 import { authenticator } from '@otplib/preset-default';
-import argon2 from 'argon2';
 import { app } from '../src/app';
 import prisma from '../src/config/database';
 import {
@@ -16,8 +16,6 @@ import {
   verifyAndEnableTotp,
   createMfaToken,
   verifyMfaLogin,
-  disableMfa,
-  regenerateBackupCodes,
 } from '../src/services/mfaService';
 import { registerUser, verifyEmail, loginUser } from '../src/services/authService';
 
@@ -63,6 +61,15 @@ async function createMfaUser(email: string): Promise<{
   const totpCode = authenticator.generate(secret);
   const backupCodes = await verifyAndEnableTotp(userId, totpCode);
   return { userId, secret, backupCodes };
+}
+
+/**
+ * Complete the MFA login flow and return tokens.
+ */
+async function loginWithMfa(userId: string, secret: string): Promise<{ accessToken: string; refreshToken: string }> {
+  const mfaLoginToken = await createMfaToken(userId);
+  const code = authenticator.generate(secret);
+  return verifyMfaLogin(mfaLoginToken, code);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,20 +125,14 @@ describe('POST /api/auth/mfa/totp/setup', () => {
 
   it('returns 409 when MFA is already enabled', async () => {
     const { userId, secret } = await createMfaUser('setup2@example.com');
-    const { accessToken } = await loginUser('setup2@example.com', TEST_PASSWORD) as any;
-
-    // MFA is enabled, first need to verify the MFA code to get tokens
-    const mfaToken = (await loginUser('setup2@example.com', TEST_PASSWORD) as any).mfaToken;
-    const code = authenticator.generate(secret);
-    const tokens = await verifyMfaLogin(mfaToken, code);
+    const { accessToken } = await loginWithMfa(userId, secret);
 
     const res = await request(app)
       .post('/api/auth/mfa/totp/setup')
-      .set('Authorization', `Bearer ${tokens.accessToken}`)
+      .set('Authorization', `Bearer ${accessToken}`)
       .expect(409);
 
     expect(res.body.error).toMatch(/already enabled/i);
-    void userId;
   });
 });
 
@@ -172,7 +173,7 @@ describe('POST /api/auth/mfa/totp/enable', () => {
   });
 
   it('returns 400 for invalid TOTP code', async () => {
-    const userId = await createVerifiedUser('enable2@example.com');
+    await createVerifiedUser('enable2@example.com');
     const { accessToken } = await loginUser('enable2@example.com', TEST_PASSWORD) as any;
 
     await request(app)
@@ -187,11 +188,10 @@ describe('POST /api/auth/mfa/totp/enable', () => {
       .expect(400);
 
     expect(res.body.error).toMatch(/invalid totp code/i);
-    void userId;
   });
 
   it('returns 400 if setup was not initiated', async () => {
-    const userId = await createVerifiedUser('enable3@example.com');
+    await createVerifiedUser('enable3@example.com');
     const { accessToken } = await loginUser('enable3@example.com', TEST_PASSWORD) as any;
 
     const res = await request(app)
@@ -201,11 +201,10 @@ describe('POST /api/auth/mfa/totp/enable', () => {
       .expect(400);
 
     expect(res.body.error).toMatch(/setup/i);
-    void userId;
   });
 
   it('rejects invalid TOTP code format', async () => {
-    const userId = await createVerifiedUser('enable4@example.com');
+    await createVerifiedUser('enable4@example.com');
     const { accessToken } = await loginUser('enable4@example.com', TEST_PASSWORD) as any;
 
     const res = await request(app)
@@ -215,7 +214,6 @@ describe('POST /api/auth/mfa/totp/enable', () => {
       .expect(400);
 
     expect(res.body.error).toMatch(/validation/i);
-    void userId;
   });
 });
 
@@ -225,7 +223,7 @@ describe('POST /api/auth/mfa/totp/enable', () => {
 
 describe('POST /api/auth/login (with MFA)', () => {
   it('returns mfaRequired and mfaToken when MFA is enabled', async () => {
-    const { secret } = await createMfaUser('mfalogin@example.com');
+    await createMfaUser('mfalogin@example.com');
 
     const res = await request(app)
       .post('/api/auth/login')
@@ -235,7 +233,6 @@ describe('POST /api/auth/login (with MFA)', () => {
     expect(res.body.mfaRequired).toBe(true);
     expect(res.body).toHaveProperty('mfaToken');
     expect(res.body).not.toHaveProperty('accessToken');
-    void secret;
   });
 });
 
@@ -247,18 +244,16 @@ describe('POST /api/auth/mfa/verify', () => {
   it('returns access and refresh tokens for valid MFA token and TOTP code', async () => {
     const { secret } = await createMfaUser('verify@example.com');
 
-    // Login to get mfaToken
     const loginRes = await request(app)
       .post('/api/auth/login')
       .send({ email: 'verify@example.com', password: TEST_PASSWORD })
       .expect(200);
 
-    const { mfaToken } = loginRes.body;
     const totpCode = authenticator.generate(secret);
 
     const verifyRes = await request(app)
       .post('/api/auth/mfa/verify')
-      .send({ mfaToken, code: totpCode })
+      .send({ mfaToken: loginRes.body.mfaToken, code: totpCode })
       .expect(200);
 
     expect(verifyRes.body).toHaveProperty('accessToken');
@@ -333,32 +328,28 @@ describe('POST /api/auth/mfa/verify', () => {
   it('invalidates backup code after use', async () => {
     const { userId, backupCodes } = await createMfaUser('verify5@example.com');
 
+    // First login: use backup code
     const loginRes = await request(app)
       .post('/api/auth/login')
       .send({ email: 'verify5@example.com', password: TEST_PASSWORD })
       .expect(200);
 
-    // Use the backup code
     await request(app)
       .post('/api/auth/mfa/verify')
       .send({ mfaToken: loginRes.body.mfaToken, code: backupCodes[0] })
       .expect(200);
 
-    // Check the code is marked as used
+    // Verify the code is marked as used in the DB
     const usedCode = await prisma.mfaBackupCode.findFirst({
       where: { userId, usedAt: { not: null } },
     });
     expect(usedCode).not.toBeNull();
 
-    // Try to use the same backup code again (new MFA login flow)
-    const loginRes2 = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'verify5@example.com', password: TEST_PASSWORD })
-      .expect(200);
-
+    // Try to use the same backup code again with a new MFA token
+    const staleMfaToken = await createMfaToken(userId);
     const res = await request(app)
       .post('/api/auth/mfa/verify')
-      .send({ mfaToken: loginRes2.body.mfaToken, code: backupCodes[0] })
+      .send({ mfaToken: staleMfaToken, code: backupCodes[0] })
       .expect(401);
 
     expect(res.body.error).toMatch(/invalid mfa code/i);
@@ -380,11 +371,7 @@ describe('POST /api/auth/mfa/verify', () => {
 describe('POST /api/auth/mfa/disable', () => {
   it('disables MFA after verifying TOTP code', async () => {
     const { userId, secret } = await createMfaUser('disable@example.com');
-
-    // Get access token via MFA login flow
-    const mfaLoginToken = await createMfaToken(userId);
-    const code = authenticator.generate(secret);
-    const { accessToken } = await verifyMfaLogin(mfaLoginToken, code);
+    const { accessToken } = await loginWithMfa(userId, secret);
 
     const disableCode = authenticator.generate(secret);
     const res = await request(app)
@@ -401,12 +388,8 @@ describe('POST /api/auth/mfa/disable', () => {
   });
 
   it('disables MFA using a backup code', async () => {
-    const { userId, backupCodes } = await createMfaUser('disable2@example.com');
-
-    const mfaLoginToken = await createMfaToken(userId);
-    const mfaUserSecret = (await prisma.user.findUnique({ where: { id: userId } }))?.mfaTotpSecret!;
-    const loginCode = authenticator.generate(mfaUserSecret);
-    const { accessToken } = await verifyMfaLogin(mfaLoginToken, loginCode);
+    const { userId, secret, backupCodes } = await createMfaUser('disable2@example.com');
+    const { accessToken } = await loginWithMfa(userId, secret);
 
     const res = await request(app)
       .post('/api/auth/mfa/disable')
@@ -419,10 +402,7 @@ describe('POST /api/auth/mfa/disable', () => {
 
   it('returns 400 for an invalid code', async () => {
     const { userId, secret } = await createMfaUser('disable3@example.com');
-
-    const mfaLoginToken = await createMfaToken(userId);
-    const code = authenticator.generate(secret);
-    const { accessToken } = await verifyMfaLogin(mfaLoginToken, code);
+    const { accessToken } = await loginWithMfa(userId, secret);
 
     const res = await request(app)
       .post('/api/auth/mfa/disable')
@@ -448,10 +428,7 @@ describe('POST /api/auth/mfa/disable', () => {
 describe('POST /api/auth/mfa/backup-codes/regenerate', () => {
   it('regenerates backup codes after verifying TOTP code', async () => {
     const { userId, secret, backupCodes: oldCodes } = await createMfaUser('regen@example.com');
-
-    const mfaLoginToken = await createMfaToken(userId);
-    const code = authenticator.generate(secret);
-    const { accessToken } = await verifyMfaLogin(mfaLoginToken, code);
+    const { accessToken } = await loginWithMfa(userId, secret);
 
     const totpCode = authenticator.generate(secret);
     const res = await request(app)
@@ -461,40 +438,21 @@ describe('POST /api/auth/mfa/backup-codes/regenerate', () => {
       .expect(200);
 
     expect(res.body.backupCodes).toHaveLength(10);
-    // New codes should differ from old ones
     expect(res.body.backupCodes[0]).not.toBe(oldCodes[0]);
 
     // Old backup codes should no longer work
-    const mfaLoginToken2 = await createMfaToken(userId);
-    const loginVerify = await verifyMfaLogin(
-      mfaLoginToken2,
-      authenticator.generate(secret),
-    );
-    const loginToken3 = await createMfaToken(userId);
-    await request(app)
+    const staleMfaToken = await createMfaToken(userId);
+    const invalidRes = await request(app)
       .post('/api/auth/mfa/verify')
-      .send({ mfaToken: (await (async () => {
-        const tok = await prisma.mfaToken.create({
-          data: {
-            token: require('crypto').randomBytes(32).toString('hex'),
-            userId,
-            expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-          },
-        });
-        return tok.token;
-      })()),
-        code: oldCodes[0] })
+      .send({ mfaToken: staleMfaToken, code: oldCodes[0] })
       .expect(401);
 
-    void oldCodes; void loginVerify; void loginToken3;
+    expect(invalidRes.body.error).toMatch(/invalid mfa code/i);
   });
 
   it('returns 400 for invalid TOTP code', async () => {
     const { userId, secret } = await createMfaUser('regen2@example.com');
-
-    const mfaLoginToken = await createMfaToken(userId);
-    const code = authenticator.generate(secret);
-    const { accessToken } = await verifyMfaLogin(mfaLoginToken, code);
+    const { accessToken } = await loginWithMfa(userId, secret);
 
     const res = await request(app)
       .post('/api/auth/mfa/backup-codes/regenerate')
@@ -514,7 +472,7 @@ describe('POST /api/auth/mfa/backup-codes/regenerate', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MFA service: expired MFA token
+// MFA token expiry
 // ---------------------------------------------------------------------------
 
 describe('MFA token expiry', () => {
@@ -522,7 +480,7 @@ describe('MFA token expiry', () => {
     const { userId } = await createMfaUser('expired@example.com');
 
     // Create an already-expired MFA token directly in DB
-    const token = require('crypto').randomBytes(32).toString('hex');
+    const token = crypto.randomBytes(32).toString('hex');
     await prisma.mfaToken.create({
       data: {
         token,
@@ -547,7 +505,7 @@ describe('MFA token expiry', () => {
 describe('Full MFA login flow', () => {
   it('completes the full setup and login flow', async () => {
     const email = 'fullflow@example.com';
-    const userId = await createVerifiedUser(email);
+    await createVerifiedUser(email);
     const { accessToken: setupAccessToken } = await loginUser(email, TEST_PASSWORD) as any;
 
     // 1. Setup TOTP
@@ -586,7 +544,5 @@ describe('Full MFA login flow', () => {
 
     expect(verifyRes.body).toHaveProperty('accessToken');
     expect(verifyRes.body).toHaveProperty('refreshToken');
-
-    void userId;
   });
 });
