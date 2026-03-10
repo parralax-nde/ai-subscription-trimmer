@@ -73,7 +73,11 @@ function validState(): string {
 
 /** Expired state JWT for testing. */
 function expiredState(): string {
-  return jwt.sign({ nonce: 'old' }, process.env.JWT_ACCESS_SECRET!, { expiresIn: -1 });
+  // Set exp to 10 seconds in the past to ensure the token is definitively expired
+  return jwt.sign(
+    { nonce: 'old', exp: Math.floor(Date.now() / 1000) - 10 },
+    process.env.JWT_ACCESS_SECRET!,
+  );
 }
 
 /**

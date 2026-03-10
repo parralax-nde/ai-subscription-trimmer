@@ -186,6 +186,9 @@ interface AppleJwk extends webcrypto.JsonWebKey {
   kid?: string;
 }
 
+/** How long to cache Apple's JWKS before re-fetching (milliseconds). */
+const JWKS_CACHE_TTL_MS = 3_600_000; // 1 hour
+
 // Simple in-memory JWKS cache — refreshed at most once per hour.
 interface JwksCache {
   keys: AppleJwk[];
@@ -195,7 +198,7 @@ let appleJwksCache: JwksCache | null = null;
 
 async function getApplePublicKey(kid: string): Promise<crypto.KeyObject> {
   const now = Date.now();
-  if (!appleJwksCache || now - appleJwksCache.fetchedAt > 3_600_000) {
+  if (!appleJwksCache || now - appleJwksCache.fetchedAt > JWKS_CACHE_TTL_MS) {
     const jwks = await httpGet('https://appleid.apple.com/auth/keys', {}) as { keys: AppleJwk[] };
     appleJwksCache = { keys: jwks.keys, fetchedAt: now };
   }
@@ -306,8 +309,10 @@ export async function findOrCreateSocialUser(params: FindOrCreateSocialUserParam
   }
 
   // 3. Create a new user.
-  //    Apple may withhold the real email after first sign-in; when that
-  //    happens use a placeholder so the unique constraint is satisfied.
+  //    Apple may withhold the real email after the first sign-in; when that
+  //    happens we generate a placeholder using the `.invalid` TLD (reserved
+  //    by RFC 2606 for exactly this kind of non-deliverable placeholder) so
+  //    the unique email constraint is satisfied without storing a fake real address.
   const resolvedEmail = email ?? `${provider}.${providerId}@social.invalid`;
 
   const newUser = await prisma.user.create({
