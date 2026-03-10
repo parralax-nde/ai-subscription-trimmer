@@ -66,3 +66,34 @@ export const mfaRegenerateBackupCodesSchema = z.object({
     .length(6, 'TOTP code must be 6 digits.')
     .regex(/^\d{6}$/, 'TOTP code must contain only digits.'),
 });
+
+// ---------------------------------------------------------------------------
+// Magic Link schemas
+// ---------------------------------------------------------------------------
+
+export const magicLinkSendSchema = z.object({
+  email: z.string().email('Invalid email address.').max(254),
+});
+
+export const magicLinkVerifySchema = z.object({
+  token: z.string().min(1, 'Token is required.'),
+});
+
+// ---------------------------------------------------------------------------
+// Biometric schemas
+// ---------------------------------------------------------------------------
+
+export const biometricRegisterSchema = z.object({
+  publicKey: z.string().min(1, 'Public key is required.'),
+  deviceId: z.string().min(1, 'Device ID is required.').max(255),
+  deviceName: z.string().max(255).optional(),
+});
+
+export const biometricChallengeSchema = z.object({
+  credentialId: z.string().min(1, 'Credential ID is required.'),
+});
+
+export const biometricVerifySchema = z.object({
+  credentialId: z.string().min(1, 'Credential ID is required.'),
+  signature: z.string().min(1, 'Signature is required.'),
+});

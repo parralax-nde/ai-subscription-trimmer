@@ -43,6 +43,14 @@ export const config = {
       process.env.PASSWORD_RESET_TOKEN_EXPIRES_MS ?? '3600000',
       10,
     ),
+    magicLinkExpiresMs: parseInt(
+      process.env.MAGIC_LINK_TOKEN_EXPIRES_MS ?? '600000', // 10 minutes
+      10,
+    ),
+    biometricChallengeExpiresMs: parseInt(
+      process.env.BIOMETRIC_CHALLENGE_EXPIRES_MS ?? '300000', // 5 minutes
+      10,
+    ),
   },
 
   rateLimit: {
