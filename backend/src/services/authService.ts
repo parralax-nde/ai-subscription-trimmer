@@ -4,6 +4,7 @@ import { config } from '../config';
 import { generateSecureToken } from '../utils/crypto';
 import { generateAccessToken, generateRefreshToken, parseDurationMs } from '../utils/tokens';
 import { sendVerificationEmail, sendPasswordResetEmail } from './emailService';
+import { createMfaToken } from './mfaService';
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -94,14 +95,22 @@ export async function verifyEmail(token: string): Promise<void> {
 // Login
 // ---------------------------------------------------------------------------
 
-export interface LoginResult {
+export interface LoginResultSuccess {
   accessToken: string;
   refreshToken: string;
 }
 
+export interface LoginResultMfaRequired {
+  mfaRequired: true;
+  mfaToken: string;
+}
+
+export type LoginResult = LoginResultSuccess | LoginResultMfaRequired;
+
 /**
  * Authenticate a user with email and password.
- * Returns access and refresh tokens on success.
+ * Returns access and refresh tokens when MFA is not enabled.
+ * Returns an MFA challenge token when MFA is enabled.
  * Throws 'INVALID_CREDENTIALS' for any authentication failure to prevent
  * user enumeration attacks.
  */
@@ -134,6 +143,11 @@ export async function loginUser(
     throw new Error('EMAIL_NOT_VERIFIED');
   }
 
+  if (user.mfaEnabled) {
+    const mfaToken = await createMfaToken(user.id);
+    return { mfaRequired: true, mfaToken };
+  }
+
   return issueTokens(user.id);
 }
 
@@ -144,7 +158,7 @@ export async function loginUser(
 /**
  * Rotate refresh token — revoke the old one and issue new access + refresh tokens.
  */
-export async function refreshTokens(refreshToken: string): Promise<LoginResult> {
+export async function refreshTokens(refreshToken: string): Promise<LoginResultSuccess> {
   const { verifyRefreshToken } = await import('../utils/tokens');
 
   let payload: { sub: string; jti: string };
@@ -261,7 +275,7 @@ export async function resetPassword(token: string, newPassword: string): Promise
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function issueTokens(userId: string): Promise<LoginResult> {
+async function issueTokens(userId: string): Promise<LoginResultSuccess> {
   const accessToken = generateAccessToken(userId);
   const { token: refreshToken } = generateRefreshToken(userId);
 
