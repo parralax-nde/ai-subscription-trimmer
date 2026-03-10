@@ -27,6 +27,8 @@ model User {
   refreshTokens           RefreshToken[]
   mfaBackupCodes          MfaBackupCode[]
   mfaTokens               MfaToken[]
+  magicLinkTokens         MagicLinkToken[]
+  biometricCredentials    BiometricCredential[]
 }
 
 model EmailVerificationToken {
@@ -89,5 +91,33 @@ model MfaToken {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+}
+
+model MagicLinkToken {
+  id        String    @id @default(uuid())
+  token     String    @unique
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model BiometricCredential {
+  id          String   @id @default(uuid())
+  credentialId String  @unique
+  publicKey   String
+  deviceId    String
+  deviceName  String?
+  userId      String
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
   @@index([userId])
 }

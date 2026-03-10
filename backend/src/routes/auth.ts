@@ -13,6 +13,11 @@ import {
   mfaDisableSchema,
   mfaVerifyLoginSchema,
   mfaRegenerateBackupCodesSchema,
+  magicLinkSendSchema,
+  magicLinkVerifySchema,
+  biometricRegisterSchema,
+  biometricChallengeSchema,
+  biometricVerifySchema,
 } from './authSchemas';
 import {
   registerUser,
@@ -30,6 +35,14 @@ import {
   verifyMfaLogin,
   regenerateBackupCodes,
 } from '../services/mfaService';
+import { sendMagicLink, verifyMagicLink } from '../services/magicLinkService';
+import {
+  registerBiometric,
+  generateChallenge,
+  verifyBiometric,
+  listCredentials,
+  removeCredential,
+} from '../services/biometricService';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
@@ -339,6 +352,201 @@ router.post(
         }
       }
       console.error('[auth] mfa/verify error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Magic Link — Passwordless authentication
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/auth/magic-link/send
+ * Send a magic link to the user's email for passwordless login.
+ * Response is always generic to prevent user enumeration.
+ */
+router.post(
+  '/magic-link/send',
+  validate(magicLinkSendSchema),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      await sendMagicLink(req.body.email);
+      res.status(202).json({
+        message: 'If that email is registered or valid, you will receive a sign-in link shortly.',
+      });
+    } catch (err) {
+      console.error('[auth] magic-link/send error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+/**
+ * POST /api/auth/magic-link/verify
+ * Verify a magic link token and authenticate the user.
+ * Returns JWT access and refresh tokens, or an MFA challenge token if MFA is enabled.
+ */
+router.post(
+  '/magic-link/verify',
+  validate(magicLinkVerifySchema),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const result = await verifyMagicLink(req.body.token);
+      if ('mfaRequired' in result) {
+        res.status(200).json({ mfaRequired: true, mfaToken: result.mfaToken });
+      } else {
+        res.status(200).json({
+          accessToken: result.accessToken,
+          refreshToken: result.refreshToken,
+        });
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === 'INVALID_TOKEN') {
+        res.status(400).json({ error: 'Invalid or expired magic link token.' });
+        return;
+      }
+      console.error('[auth] magic-link/verify error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Biometric Authentication
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/auth/biometric/register
+ * Register a biometric credential for the authenticated user.
+ * The client provides the public key from its biometric-protected key pair.
+ */
+router.post(
+  '/biometric/register',
+  requireAuth,
+  validate(biometricRegisterSchema),
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const result = await registerBiometric(
+        req.userId!,
+        req.body.publicKey,
+        req.body.deviceId,
+        req.body.deviceName,
+      );
+      res.status(201).json({
+        message: 'Biometric credential registered successfully.',
+        credentialId: result.credentialId,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message === 'USER_NOT_FOUND') {
+        res.status(404).json({ error: 'User not found.' });
+        return;
+      }
+      console.error('[auth] biometric/register error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+/**
+ * POST /api/auth/biometric/challenge
+ * Generate a challenge for biometric authentication.
+ * The client must sign this challenge with the biometric-protected private key.
+ */
+router.post(
+  '/biometric/challenge',
+  validate(biometricChallengeSchema),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const result = await generateChallenge(req.body.credentialId);
+      res.status(200).json({ challenge: result.challenge });
+    } catch (err) {
+      if (err instanceof Error && err.message === 'CREDENTIAL_NOT_FOUND') {
+        res.status(404).json({ error: 'Biometric credential not found.' });
+        return;
+      }
+      console.error('[auth] biometric/challenge error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+/**
+ * POST /api/auth/biometric/verify
+ * Verify a biometric authentication attempt.
+ * The client signs the challenge with their biometric-protected private key.
+ * Returns JWT access and refresh tokens on success.
+ */
+router.post(
+  '/biometric/verify',
+  validate(biometricVerifySchema),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const result = await verifyBiometric(
+        req.body.credentialId,
+        req.body.signature,
+      );
+      res.status(200).json({
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+      });
+    } catch (err) {
+      if (err instanceof Error) {
+        if (err.message === 'CREDENTIAL_NOT_FOUND') {
+          res.status(404).json({ error: 'Biometric credential not found.' });
+          return;
+        }
+        if (err.message === 'CHALLENGE_EXPIRED') {
+          res.status(401).json({ error: 'Challenge expired or not found. Request a new challenge.' });
+          return;
+        }
+        if (err.message === 'INVALID_SIGNATURE') {
+          res.status(401).json({ error: 'Invalid biometric signature.' });
+          return;
+        }
+      }
+      console.error('[auth] biometric/verify error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+/**
+ * GET /api/auth/biometric/credentials
+ * List all biometric credentials for the authenticated user.
+ */
+router.get(
+  '/biometric/credentials',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const credentials = await listCredentials(req.userId!);
+      res.status(200).json({ credentials });
+    } catch (err) {
+      console.error('[auth] biometric/credentials error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+/**
+ * DELETE /api/auth/biometric/:credentialId
+ * Remove a biometric credential for the authenticated user.
+ */
+router.delete(
+  '/biometric/:credentialId',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const credentialId = req.params.credentialId as string;
+      await removeCredential(req.userId!, credentialId);
+      res.status(200).json({ message: 'Biometric credential removed successfully.' });
+    } catch (err) {
+      if (err instanceof Error && err.message === 'CREDENTIAL_NOT_FOUND') {
+        res.status(404).json({ error: 'Biometric credential not found.' });
+        return;
+      }
+      console.error('[auth] biometric/remove error:', err);
       res.status(500).json({ error: 'An unexpected error occurred.' });
     }
   },
