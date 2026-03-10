@@ -15,12 +15,16 @@ model User {
   email             String    @unique
   passwordHash      String
   isEmailVerified   Boolean   @default(false)
+  mfaEnabled        Boolean   @default(false)
+  mfaTotpSecret     String?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
   refreshTokens           RefreshToken[]
+  mfaBackupCodes          MfaBackupCode[]
+  mfaTokens               MfaToken[]
 }
 
 model EmailVerificationToken {
@@ -55,6 +59,31 @@ model RefreshToken {
   expiresAt DateTime
   revokedAt DateTime?
   createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model MfaBackupCode {
+  id        String    @id @default(uuid())
+  codeHash  String
+  userId    String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model MfaToken {
+  id        String    @id @default(uuid())
+  token     String    @unique
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

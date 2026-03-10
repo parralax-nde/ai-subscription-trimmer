@@ -39,3 +39,30 @@ export const refreshTokenSchema = z.object({
 export const logoutSchema = z.object({
   refreshToken: z.string().min(1, 'Refresh token is required.'),
 });
+
+// ---------------------------------------------------------------------------
+// MFA schemas
+// ---------------------------------------------------------------------------
+
+export const mfaVerifySetupSchema = z.object({
+  totpCode: z
+    .string()
+    .length(6, 'TOTP code must be 6 digits.')
+    .regex(/^\d{6}$/, 'TOTP code must contain only digits.'),
+});
+
+export const mfaDisableSchema = z.object({
+  code: z.string().min(1, 'MFA code is required.'),
+});
+
+export const mfaVerifyLoginSchema = z.object({
+  mfaToken: z.string().min(1, 'MFA token is required.'),
+  code: z.string().min(1, 'MFA code is required.'),
+});
+
+export const mfaRegenerateBackupCodesSchema = z.object({
+  totpCode: z
+    .string()
+    .length(6, 'TOTP code must be 6 digits.')
+    .regex(/^\d{6}$/, 'TOTP code must contain only digits.'),
+});
