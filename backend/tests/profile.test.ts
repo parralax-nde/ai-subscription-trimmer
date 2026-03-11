@@ -410,3 +410,183 @@ describe('PATCH /api/profile/preferences', () => {
       .expect(401);
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/profile/deactivate
+// ---------------------------------------------------------------------------
+
+describe('POST /api/profile/deactivate', () => {
+  it('deactivates the account, sets deactivatedAt, and revokes all refresh tokens', async () => {
+    const { accessToken, userId } = await registerAndVerify('deactivate@example.com', 'Secure@Pass1');
+
+    const res = await request(app)
+      .post('/api/profile/deactivate')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ password: 'Secure@Pass1' })
+      .expect(200);
+
+    expect(res.body.message).toMatch(/deactivated/i);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(user.deactivatedAt).not.toBeNull();
+
+    const activeTokens = await prisma.refreshToken.findMany({
+      where: { userId, revokedAt: null },
+    });
+    expect(activeTokens).toHaveLength(0);
+  });
+
+  it('prevents login after deactivation', async () => {
+    const { accessToken } = await registerAndVerify('deactivated-login@example.com', 'Secure@Pass1');
+
+    await request(app)
+      .post('/api/profile/deactivate')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ password: 'Secure@Pass1' })
+      .expect(200);
+
+    const loginRes = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'deactivated-login@example.com', password: 'Secure@Pass1' })
+      .expect(403);
+
+    expect(loginRes.body.error).toMatch(/deactivated/i);
+  });
+
+  it('returns 401 for wrong password', async () => {
+    const { accessToken } = await registerAndVerify('deactivate-wrongpw@example.com', 'Secure@Pass1');
+
+    const res = await request(app)
+      .post('/api/profile/deactivate')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ password: 'WrongPassword!' })
+      .expect(401);
+
+    expect(res.body.error).toMatch(/incorrect password/i);
+  });
+
+  it('returns 409 if account is already deactivated', async () => {
+    const { accessToken } = await registerAndVerify('already-deactivated@example.com', 'Secure@Pass1');
+
+    await request(app)
+      .post('/api/profile/deactivate')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ password: 'Secure@Pass1' })
+      .expect(200);
+
+    // The token is still valid for this call since JWT is stateless
+    const res = await request(app)
+      .post('/api/profile/deactivate')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ password: 'Secure@Pass1' })
+      .expect(409);
+
+    expect(res.body.error).toMatch(/already deactivated/i);
+  });
+
+  it('returns 401 when unauthenticated', async () => {
+    await request(app)
+      .post('/api/profile/deactivate')
+      .send({ password: 'Secure@Pass1' })
+      .expect(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/profile
+// ---------------------------------------------------------------------------
+
+describe('DELETE /api/profile', () => {
+  it('permanently deletes the account and all associated data', async () => {
+    const { accessToken, userId } = await registerAndVerify('delete@example.com', 'Secure@Pass1');
+
+    const res = await request(app)
+      .delete('/api/profile')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ password: 'Secure@Pass1' })
+      .expect(200);
+
+    expect(res.body.message).toMatch(/permanently deleted/i);
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    expect(user).toBeNull();
+  });
+
+  it('returns 401 for wrong password', async () => {
+    const { accessToken } = await registerAndVerify('delete-wrongpw@example.com', 'Secure@Pass1');
+
+    const res = await request(app)
+      .delete('/api/profile')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ password: 'WrongPassword!' })
+      .expect(401);
+
+    expect(res.body.error).toMatch(/incorrect password/i);
+  });
+
+  it('returns 401 when unauthenticated', async () => {
+    await request(app)
+      .delete('/api/profile')
+      .send({ password: 'Secure@Pass1' })
+      .expect(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/profile/export
+// ---------------------------------------------------------------------------
+
+describe('GET /api/profile/export', () => {
+  it('returns personal data as a JSON export', async () => {
+    const { accessToken, userId } = await registerAndVerify('export@example.com', 'Secure@Pass1');
+
+    // Set a preference to verify it appears in the export
+    await request(app)
+      .patch('/api/profile/preferences')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ theme: 'dark', language: 'fr' })
+      .expect(200);
+
+    const res = await request(app)
+      .get('/api/profile/export')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+
+    expect(res.body.exportedAt).toBeDefined();
+    expect(res.body.profile.id).toBe(userId);
+    expect(res.body.profile.email).toBe('export@example.com');
+    expect(res.body.profile.isEmailVerified).toBe(true);
+    expect(res.body.profile).not.toHaveProperty('passwordHash');
+    expect(res.body.profile).not.toHaveProperty('mfaTotpSecret');
+    expect(res.body.preferences.theme).toBe('dark');
+    expect(res.body.preferences.language).toBe('fr');
+    expect(res.body.profile.deactivatedAt).toBeNull();
+  });
+
+  it('includes null preferences when none have been set', async () => {
+    const { accessToken } = await registerAndVerify('export-noprefs@example.com', 'Secure@Pass1');
+
+    const res = await request(app)
+      .get('/api/profile/export')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+
+    expect(res.body.preferences).toBeNull();
+  });
+
+  it('returns the Content-Disposition header for file download', async () => {
+    const { accessToken } = await registerAndVerify('export-header@example.com', 'Secure@Pass1');
+
+    const res = await request(app)
+      .get('/api/profile/export')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+
+    expect(res.headers['content-disposition']).toMatch(/attachment/i);
+    expect(res.headers['content-disposition']).toMatch(/my-data\.json/i);
+  });
+
+  it('returns 401 when unauthenticated', async () => {
+    await request(app).get('/api/profile/export').expect(401);
+  });
+});

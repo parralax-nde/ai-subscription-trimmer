@@ -1,3 +1,4 @@
+import argon2 from 'argon2';
 import prisma from '../config/database';
 import { config } from '../config';
 import { generateSecureToken } from '../utils/crypto';
@@ -199,5 +200,155 @@ export async function updatePreferences(
     emailNotifications: prefs.emailNotifications,
     theme: prefs.theme,
     language: prefs.language,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Account Deactivation & Deletion
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify password for a sensitive operation, or skip if the user has no password.
+ * Throws 'INVALID_CREDENTIALS' when the supplied password is wrong.
+ */
+async function verifyPasswordIfSet(user: { passwordHash: string | null }, password?: string): Promise<void> {
+  if (!user.passwordHash) {
+    // Social-only account — no password to verify; authentication alone is sufficient.
+    return;
+  }
+
+  const hashToVerify = user.passwordHash;
+  let valid = false;
+  try {
+    valid = await argon2.verify(hashToVerify, password ?? '');
+  } catch {
+    valid = false;
+  }
+
+  if (!valid) {
+    throw new Error('INVALID_CREDENTIALS');
+  }
+}
+
+/**
+ * Soft-deactivate the authenticated user's account.
+ * - Sets deactivatedAt timestamp (prevents future logins).
+ * - Revokes all active refresh tokens (forces logout everywhere).
+ * For password-based accounts the current password must be supplied.
+ */
+export async function deactivateAccount(userId: string, password?: string): Promise<void> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    throw new Error('USER_NOT_FOUND');
+  }
+
+  if (user.deactivatedAt) {
+    throw new Error('ACCOUNT_ALREADY_DEACTIVATED');
+  }
+
+  await verifyPasswordIfSet(user, password);
+
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: userId },
+      data: { deactivatedAt: new Date() },
+    }),
+    prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    }),
+  ]);
+}
+
+/**
+ * Permanently delete the authenticated user's account and all associated data.
+ * Cascading deletes in the database handle related records automatically.
+ * For password-based accounts the current password must be supplied.
+ */
+export async function deleteAccount(userId: string, password?: string): Promise<void> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    throw new Error('USER_NOT_FOUND');
+  }
+
+  await verifyPasswordIfSet(user, password);
+
+  await prisma.user.delete({ where: { id: userId } });
+}
+
+// ---------------------------------------------------------------------------
+// Data Export
+// ---------------------------------------------------------------------------
+
+export interface UserDataExport {
+  exportedAt: string;
+  profile: {
+    id: string;
+    email: string;
+    name: string | null;
+    phoneNumber: string | null;
+    phoneVerified: boolean;
+    isEmailVerified: boolean;
+    mfaEnabled: boolean;
+    createdAt: string;
+    updatedAt: string;
+    deactivatedAt: string | null;
+  };
+  preferences: UserPreferencesData | null;
+}
+
+/**
+ * Export all personal data for the authenticated user in a machine-readable format.
+ * Returns a structured JSON object suitable for download.
+ */
+export async function exportData(userId: string): Promise<UserDataExport> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      phoneNumber: true,
+      phoneVerified: true,
+      isEmailVerified: true,
+      mfaEnabled: true,
+      createdAt: true,
+      updatedAt: true,
+      deactivatedAt: true,
+      preferences: {
+        select: {
+          emailNotifications: true,
+          theme: true,
+          language: true,
+        },
+      },
+    },
+  });
+
+  if (!user) {
+    throw new Error('USER_NOT_FOUND');
+  }
+
+  return {
+    exportedAt: new Date().toISOString(),
+    profile: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      phoneNumber: user.phoneNumber,
+      phoneVerified: user.phoneVerified,
+      isEmailVerified: user.isEmailVerified,
+      mfaEnabled: user.mfaEnabled,
+      createdAt: user.createdAt.toISOString(),
+      updatedAt: user.updatedAt.toISOString(),
+      deactivatedAt: user.deactivatedAt ? user.deactivatedAt.toISOString() : null,
+    },
+    preferences: user.preferences
+      ? {
+          emailNotifications: user.preferences.emailNotifications,
+          theme: user.preferences.theme,
+          language: user.preferences.language,
+        }
+      : null,
   };
 }
