@@ -152,18 +152,19 @@ describe('DELETE /api/auth/sessions/:sessionId', () => {
   });
 
   it('returns 404 for a session that does not belong to the user', async () => {
-    const { accessToken: token1, userId: userId1 } = await registerAndVerify(
+    const { accessToken: token1 } = await registerAndVerify(
       'owner@example.com',
       'Secure@Pass1',
     );
-    const { userId: userId2 } = await registerAndVerify(
+    await registerAndVerify(
       'other@example.com',
       'Secure@Pass1',
     );
 
-    // Get a session ID belonging to user2
+    // Get a session ID belonging to the other user
+    const otherUser = await prisma.user.findUniqueOrThrow({ where: { email: 'other@example.com' } });
     const otherSession = await prisma.refreshToken.findFirstOrThrow({
-      where: { userId: userId2, revokedAt: null },
+      where: { userId: otherUser.id, revokedAt: null },
     });
 
     const res = await request(app)
@@ -176,9 +177,6 @@ describe('DELETE /api/auth/sessions/:sessionId', () => {
     // Verify it was NOT revoked
     const unchanged = await prisma.refreshToken.findUniqueOrThrow({ where: { id: otherSession.id } });
     expect(unchanged.revokedAt).toBeNull();
-
-    // Suppress unused variable warning
-    void userId1;
   });
 
   it('returns 404 when revoking an already-revoked session', async () => {
@@ -257,7 +255,7 @@ describe('GET /api/auth/security-logs', () => {
   });
 
   it('records LOGIN_FAILED for invalid credentials', async () => {
-    const { accessToken, userId } = await registerAndVerify(
+    const { accessToken } = await registerAndVerify(
       'login-failed@example.com',
       'Secure@Pass1',
     );
@@ -275,8 +273,6 @@ describe('GET /api/auth/security-logs', () => {
 
     const eventTypes = (res.body.logs as Array<{ eventType: string }>).map((l) => l.eventType);
     expect(eventTypes).toContain('LOGIN_FAILED');
-
-    void userId;
   });
 
   it('records LOGOUT event', async () => {

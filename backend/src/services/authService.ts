@@ -140,10 +140,7 @@ export async function loginUser(
   }
 
   if (!user || !passwordValid) {
-    await logSecurityEvent(user?.id ?? null, 'LOGIN_FAILED', {
-      ...metadata,
-      metadata: { email: normalizedEmail },
-    });
+    await logSecurityEvent(user?.id ?? null, 'LOGIN_FAILED', metadata);
     throw new Error('INVALID_CREDENTIALS');
   }
 

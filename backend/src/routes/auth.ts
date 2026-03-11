@@ -44,7 +44,7 @@ import {
   removeCredential,
 } from '../services/biometricService';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
-import { logSecurityEvent } from '../services/securityLogService';
+import { logSecurityEvent, getSecurityLogs } from '../services/securityLogService';
 import { listActiveSessions, revokeSession, revokeAllSessions } from '../services/sessionService';
 import { z } from 'zod';
 
@@ -671,7 +671,6 @@ router.get(
       const parsed = securityLogLimitSchema.safeParse({ limit: req.query.limit });
       const limit = parsed.success ? parsed.data.limit : 50;
 
-      const { getSecurityLogs } = await import('../services/securityLogService');
       const logs = await getSecurityLogs(req.userId!, limit);
       res.status(200).json({ logs });
     } catch (err) {
