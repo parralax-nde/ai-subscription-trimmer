@@ -52,6 +52,7 @@ beforeAll(async () => {
 
 afterEach(async () => {
   // Clean DB between tests for isolation
+  await prisma.securityLog.deleteMany();
   await prisma.refreshToken.deleteMany();
   await prisma.passwordResetToken.deleteMany();
   await prisma.emailVerificationToken.deleteMany();
