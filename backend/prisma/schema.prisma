@@ -15,6 +15,9 @@ model User {
   email             String    @unique
   passwordHash      String?
   isEmailVerified   Boolean   @default(false)
+  name              String?
+  phoneNumber       String?   @unique
+  phoneVerified     Boolean   @default(false)
   googleId          String?   @unique
   appleId           String?   @unique
   mfaEnabled        Boolean   @default(false)
@@ -29,6 +32,33 @@ model User {
   mfaTokens               MfaToken[]
   magicLinkTokens         MagicLinkToken[]
   biometricCredentials    BiometricCredential[]
+  emailChangeTokens       EmailChangeToken[]
+  preferences             UserPreferences?
+}
+
+model EmailChangeToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  newEmail  String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model UserPreferences {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  emailNotifications Boolean  @default(true)
+  theme              String   @default("light")
+  language           String   @default("en")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model EmailVerificationToken {

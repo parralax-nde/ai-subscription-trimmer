@@ -51,6 +51,10 @@ export const config = {
       process.env.BIOMETRIC_CHALLENGE_EXPIRES_MS ?? '300000', // 5 minutes
       10,
     ),
+    emailChangeExpiresMs: parseInt(
+      process.env.EMAIL_CHANGE_TOKEN_EXPIRES_MS ?? '3600000', // 1 hour
+      10,
+    ),
   },
 
   rateLimit: {
