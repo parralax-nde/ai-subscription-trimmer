@@ -122,3 +122,44 @@ If you did not request this link, you can safely ignore this email.
     `.trim(),
   });
 }
+
+export async function sendEmailChangeVerificationEmail(
+  to: string,
+  token: string,
+): Promise<void> {
+  const confirmUrl = `${config.urls.frontend}/confirm-email-change?token=${token}`;
+
+  await transporter.sendMail({
+    from: config.email.from,
+    to,
+    subject: 'Confirm your new email address',
+    text: `
+You requested to change your email address on your AI Subscription Trimmer account.
+
+Click the link below to confirm your new email address:
+
+${confirmUrl}
+
+This link expires in 1 hour.
+
+If you did not request this change, you can safely ignore this email. Your email address will not be changed.
+    `.trim(),
+    html: `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+  <h1 style="color:#333;">Confirm Email Change</h1>
+  <p>You requested to change your email address on your AI Subscription Trimmer account.</p>
+  <p>Click the button below to confirm your new email address:</p>
+  <a href="${confirmUrl}"
+     style="display:inline-block;padding:12px 24px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:6px;">
+    Confirm Email Change
+  </a>
+  <p style="margin-top:16px;color:#666;">This link expires in 1 hour.</p>
+  <p style="color:#666;">If you did not request this change, you can safely ignore this email. Your email address will not be changed.</p>
+</body>
+</html>
+    `.trim(),
+  });
+}
