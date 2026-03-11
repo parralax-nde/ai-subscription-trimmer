@@ -141,6 +141,10 @@ export async function loginUser(
     throw new Error('INVALID_CREDENTIALS');
   }
 
+  if (user.deactivatedAt) {
+    throw new Error('ACCOUNT_DEACTIVATED');
+  }
+
   if (!user.isEmailVerified) {
     throw new Error('EMAIL_NOT_VERIFIED');
   }

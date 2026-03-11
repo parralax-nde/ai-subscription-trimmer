@@ -8,6 +8,9 @@ import {
   confirmEmailChange,
   getPreferences,
   updatePreferences,
+  deactivateAccount,
+  deleteAccount,
+  exportData,
 } from '../services/profileService';
 
 const router = Router();
@@ -55,6 +58,18 @@ const updatePreferencesSchema = z
       .min(2, 'Language must be a valid language code.')
       .max(10, 'Language code must not exceed 10 characters.')
       .optional(),
+  })
+  .strict();
+
+const deactivateAccountSchema = z
+  .object({
+    password: z.string().optional(),
+  })
+  .strict();
+
+const deleteAccountSchema = z
+  .object({
+    password: z.string().optional(),
   })
   .strict();
 
@@ -175,6 +190,101 @@ router.patch(
       language?: string;
     });
     res.status(200).json(prefs);
+  },
+);
+
+/**
+ * POST /api/profile/deactivate
+ * Soft-deactivates the authenticated user's account.
+ * Sets deactivatedAt and revokes all active sessions.
+ * For password-based accounts, the current password must be supplied.
+ * Warning: this action will prevent future logins until an administrator
+ * re-activates the account.
+ */
+router.post(
+  '/deactivate',
+  requireAuth,
+  validate(deactivateAccountSchema),
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      await deactivateAccount(req.userId!, req.body.password as string | undefined);
+      res.status(200).json({
+        message: 'Your account has been deactivated. All active sessions have been terminated.',
+      });
+    } catch (err) {
+      if (err instanceof Error) {
+        if (err.message === 'USER_NOT_FOUND') {
+          res.status(404).json({ error: 'User not found.' });
+          return;
+        }
+        if (err.message === 'ACCOUNT_ALREADY_DEACTIVATED') {
+          res.status(409).json({ error: 'Account is already deactivated.' });
+          return;
+        }
+        if (err.message === 'INVALID_CREDENTIALS') {
+          res.status(401).json({ error: 'Incorrect password.' });
+          return;
+        }
+      }
+      throw err;
+    }
+  },
+);
+
+/**
+ * DELETE /api/profile
+ * Permanently deletes the authenticated user's account and all associated data.
+ * This action is irreversible. For password-based accounts, the current password
+ * must be supplied as confirmation.
+ */
+router.delete(
+  '/',
+  requireAuth,
+  validate(deleteAccountSchema),
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      await deleteAccount(req.userId!, req.body.password as string | undefined);
+      res.status(200).json({
+        message: 'Your account and all associated data have been permanently deleted.',
+      });
+    } catch (err) {
+      if (err instanceof Error) {
+        if (err.message === 'USER_NOT_FOUND') {
+          res.status(404).json({ error: 'User not found.' });
+          return;
+        }
+        if (err.message === 'INVALID_CREDENTIALS') {
+          res.status(401).json({ error: 'Incorrect password.' });
+          return;
+        }
+      }
+      throw err;
+    }
+  },
+);
+
+/**
+ * GET /api/profile/export
+ * Returns the authenticated user's personal data as a JSON object,
+ * suitable for download in compliance with data privacy regulations.
+ */
+router.get(
+  '/export',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const data = await exportData(req.userId!);
+      res
+        .status(200)
+        .setHeader('Content-Disposition', 'attachment; filename="my-data.json"')
+        .json(data);
+    } catch (err) {
+      if (err instanceof Error && err.message === 'USER_NOT_FOUND') {
+        res.status(404).json({ error: 'User not found.' });
+        return;
+      }
+      throw err;
+    }
   },
 );
 

@@ -108,6 +108,10 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response)
         res.status(401).json({ error: 'Invalid email or password.' });
         return;
       }
+      if (err.message === 'ACCOUNT_DEACTIVATED') {
+        res.status(403).json({ error: 'This account has been deactivated.' });
+        return;
+      }
       if (err.message === 'EMAIL_NOT_VERIFIED') {
         res.status(403).json({ error: 'Please verify your email address before logging in.' });
         return;
