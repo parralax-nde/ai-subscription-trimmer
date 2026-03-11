@@ -81,6 +81,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  await prisma.securityLog.deleteMany();
   await prisma.mfaToken.deleteMany();
   await prisma.mfaBackupCode.deleteMany();
   await prisma.refreshToken.deleteMany();

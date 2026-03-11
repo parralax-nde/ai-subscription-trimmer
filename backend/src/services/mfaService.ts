@@ -6,6 +6,7 @@ import prisma from '../config/database';
 import { generateSecureToken } from '../utils/crypto';
 import { generateAccessToken, generateRefreshToken, parseDurationMs } from '../utils/tokens';
 import { config } from '../config';
+import { logSecurityEvent, LogEventOptions } from './securityLogService';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -252,6 +253,7 @@ export async function createMfaToken(userId: string): Promise<string> {
 export async function verifyMfaLogin(
   mfaToken: string,
   code: string,
+  metadata?: LogEventOptions,
 ): Promise<MfaLoginResult> {
   const mfaRecord = await prisma.mfaToken.findUnique({
     where: { token: mfaToken },
@@ -283,7 +285,8 @@ export async function verifyMfaLogin(
     data: { usedAt: new Date() },
   });
 
-  return issueTokens(user.id);
+  await logSecurityEvent(user.id, 'LOGIN_SUCCESS', metadata);
+  return issueTokens(user.id, metadata);
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +327,7 @@ async function verifyCode(user: UserWithBackupCodes, code: string): Promise<bool
   return false;
 }
 
-async function issueTokens(userId: string): Promise<MfaLoginResult> {
+async function issueTokens(userId: string, metadata?: LogEventOptions): Promise<MfaLoginResult> {
   const accessToken = generateAccessToken(userId);
   const { token: refreshToken } = generateRefreshToken(userId);
 
@@ -333,7 +336,13 @@ async function issueTokens(userId: string): Promise<MfaLoginResult> {
   );
 
   await prisma.refreshToken.create({
-    data: { token: refreshToken, userId, expiresAt },
+    data: {
+      token: refreshToken,
+      userId,
+      expiresAt,
+      ipAddress: metadata?.ipAddress ?? null,
+      userAgent: metadata?.userAgent ?? null,
+    },
   });
 
   return { accessToken, refreshToken };

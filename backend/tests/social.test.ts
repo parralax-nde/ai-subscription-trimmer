@@ -50,6 +50,7 @@ afterEach(async () => {
   // resetAllMocks clears call history AND drains any un-consumed mockResolvedValueOnce
   // queues, preventing stale return values from leaking between tests.
   jest.resetAllMocks();
+  await prisma.securityLog.deleteMany();
   await prisma.refreshToken.deleteMany();
   await prisma.emailVerificationToken.deleteMany();
   await prisma.passwordResetToken.deleteMany();

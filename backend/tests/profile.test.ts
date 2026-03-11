@@ -47,6 +47,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  await prisma.securityLog.deleteMany();
   await prisma.emailChangeToken.deleteMany();
   await prisma.userPreferences.deleteMany();
   await prisma.refreshToken.deleteMany();

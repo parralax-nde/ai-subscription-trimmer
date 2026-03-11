@@ -44,11 +44,25 @@ import {
   removeCredential,
 } from '../services/biometricService';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
+import { logSecurityEvent, getSecurityLogs } from '../services/securityLogService';
+import { listActiveSessions, revokeSession, revokeAllSessions } from '../services/sessionService';
+import { z } from 'zod';
 
 const router = Router();
 
 // Apply strict rate limiting to all auth routes
 router.use(authRateLimiter);
+
+// ---------------------------------------------------------------------------
+// Helper: extract request metadata for logging/session tracking
+// ---------------------------------------------------------------------------
+
+function extractMetadata(req: Request): { ipAddress?: string; userAgent?: string } {
+  return {
+    ipAddress: (req.ip ?? req.socket?.remoteAddress) || undefined,
+    userAgent: (req.headers['user-agent']) || undefined,
+  };
+}
 
 /**
  * POST /api/auth/register
@@ -93,7 +107,7 @@ router.post('/verify-email', validate(verifyEmailSchema), async (req: Request, r
  */
 router.post('/login', validate(loginSchema), async (req: Request, res: Response): Promise<void> => {
   try {
-    const result = await loginUser(req.body.email, req.body.password);
+    const result = await loginUser(req.body.email, req.body.password, extractMetadata(req));
     if ('mfaRequired' in result) {
       res.status(200).json({ mfaRequired: true, mfaToken: result.mfaToken });
     } else {
@@ -149,7 +163,7 @@ router.post('/refresh', validate(refreshTokenSchema), async (req: Request, res: 
  */
 router.post('/logout', validate(logoutSchema), async (req: Request, res: Response): Promise<void> => {
   try {
-    await logoutUser(req.body.refreshToken);
+    await logoutUser(req.body.refreshToken, extractMetadata(req));
     res.status(200).json({ message: 'Logged out successfully.' });
   } catch (err) {
     console.error('[auth] logout error:', err);
@@ -163,7 +177,7 @@ router.post('/logout', validate(logoutSchema), async (req: Request, res: Respons
  */
 router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Request, res: Response): Promise<void> => {
   try {
-    await forgotPassword(req.body.email);
+    await forgotPassword(req.body.email, extractMetadata(req));
     res.status(202).json({
       message: 'If that email is registered, you will receive a password reset email shortly.',
     });
@@ -179,7 +193,7 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
  */
 router.post('/reset-password', validate(resetPasswordSchema), async (req: Request, res: Response): Promise<void> => {
   try {
-    await resetPassword(req.body.token, req.body.password);
+    await resetPassword(req.body.token, req.body.password, extractMetadata(req));
     res.status(200).json({ message: 'Password reset successfully. You can now log in with your new password.' });
   } catch (err) {
     if (err instanceof Error && err.message === 'INVALID_TOKEN') {
@@ -236,6 +250,7 @@ router.post(
   async (req: AuthenticatedRequest, res: Response): Promise<void> => {
     try {
       const backupCodes = await verifyAndEnableTotp(req.userId!, req.body.totpCode);
+      await logSecurityEvent(req.userId!, 'MFA_ENABLED', extractMetadata(req));
       res.status(200).json({
         message: 'MFA enabled successfully.',
         backupCodes,
@@ -273,6 +288,7 @@ router.post(
   async (req: AuthenticatedRequest, res: Response): Promise<void> => {
     try {
       await disableMfa(req.userId!, req.body.code);
+      await logSecurityEvent(req.userId!, 'MFA_DISABLED', extractMetadata(req));
       res.status(200).json({ message: 'MFA disabled successfully.' });
     } catch (err) {
       if (err instanceof Error) {
@@ -303,6 +319,7 @@ router.post(
   async (req: AuthenticatedRequest, res: Response): Promise<void> => {
     try {
       const backupCodes = await regenerateBackupCodes(req.userId!, req.body.totpCode);
+      await logSecurityEvent(req.userId!, 'MFA_BACKUP_CODES_REGENERATED', extractMetadata(req));
       res.status(200).json({
         message: 'Backup codes regenerated successfully.',
         backupCodes,
@@ -339,7 +356,7 @@ router.post(
   validate(mfaVerifyLoginSchema),
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const result = await verifyMfaLogin(req.body.mfaToken, req.body.code);
+      const result = await verifyMfaLogin(req.body.mfaToken, req.body.code, extractMetadata(req));
       res.status(200).json({
         accessToken: result.accessToken,
         refreshToken: result.refreshToken,
@@ -551,6 +568,113 @@ router.delete(
         return;
       }
       console.error('[auth] biometric/remove error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Session Management
+// ---------------------------------------------------------------------------
+
+const securityLogLimitSchema = z.object({
+  limit: z
+    .string()
+    .optional()
+    .transform((val) => (val ? parseInt(val, 10) : 50))
+    .pipe(z.number().int().min(1).max(100)),
+});
+
+/**
+ * GET /api/auth/sessions
+ * List all active sessions (non-revoked, non-expired refresh tokens) for the
+ * authenticated user. Sessions are ordered most-recently-created first.
+ */
+router.get(
+  '/sessions',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const sessions = await listActiveSessions(req.userId!);
+      res.status(200).json({ sessions });
+    } catch (err) {
+      console.error('[auth] sessions error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+/**
+ * DELETE /api/auth/sessions/:sessionId
+ * Revoke a specific active session by its ID.
+ * The session must belong to the authenticated user.
+ */
+router.delete(
+  '/sessions/:sessionId',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const sessionId = req.params.sessionId as string;
+      await revokeSession(req.userId!, sessionId);
+      await logSecurityEvent(req.userId!, 'SESSION_REVOKED', {
+        ...extractMetadata(req),
+        metadata: { sessionId },
+      });
+      res.status(200).json({ message: 'Session revoked successfully.' });
+    } catch (err) {
+      if (err instanceof Error && err.message === 'SESSION_NOT_FOUND') {
+        res.status(404).json({ error: 'Session not found.' });
+        return;
+      }
+      console.error('[auth] sessions/revoke error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+/**
+ * DELETE /api/auth/sessions
+ * Revoke all active sessions for the authenticated user.
+ * This forces logout from all devices.
+ */
+router.delete(
+  '/sessions',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const count = await revokeAllSessions(req.userId!);
+      await logSecurityEvent(req.userId!, 'ALL_SESSIONS_REVOKED', extractMetadata(req));
+      res.status(200).json({
+        message: `All sessions revoked. ${count} session(s) terminated.`,
+      });
+    } catch (err) {
+      console.error('[auth] sessions/revoke-all error:', err);
+      res.status(500).json({ error: 'An unexpected error occurred.' });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Security Logs
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/auth/security-logs
+ * Return the authenticated user's recent security event history.
+ * Accepts an optional ?limit query parameter (default: 50, max: 100).
+ */
+router.get(
+  '/security-logs',
+  requireAuth,
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+      const parsed = securityLogLimitSchema.safeParse({ limit: req.query.limit });
+      const limit = parsed.success ? parsed.data.limit : 50;
+
+      const logs = await getSecurityLogs(req.userId!, limit);
+      res.status(200).json({ logs });
+    } catch (err) {
+      console.error('[auth] security-logs error:', err);
       res.status(500).json({ error: 'An unexpected error occurred.' });
     }
   },

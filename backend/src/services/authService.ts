@@ -5,6 +5,7 @@ import { generateSecureToken } from '../utils/crypto';
 import { generateAccessToken, generateRefreshToken, parseDurationMs } from '../utils/tokens';
 import { sendVerificationEmail, sendPasswordResetEmail } from './emailService';
 import { createMfaToken } from './mfaService';
+import { logSecurityEvent, LogEventOptions } from './securityLogService';
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -117,6 +118,7 @@ export type LoginResult = LoginResultSuccess | LoginResultMfaRequired;
 export async function loginUser(
   email: string,
   password: string,
+  metadata?: LogEventOptions,
 ): Promise<LoginResult> {
   const normalizedEmail = email.toLowerCase().trim();
   const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
@@ -138,6 +140,7 @@ export async function loginUser(
   }
 
   if (!user || !passwordValid) {
+    await logSecurityEvent(user?.id ?? null, 'LOGIN_FAILED', metadata);
     throw new Error('INVALID_CREDENTIALS');
   }
 
@@ -154,7 +157,8 @@ export async function loginUser(
     return { mfaRequired: true, mfaToken };
   }
 
-  return issueTokens(user.id);
+  await logSecurityEvent(user.id, 'LOGIN_SUCCESS', metadata);
+  return issueTokens(user.id, metadata);
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +197,13 @@ export async function refreshTokens(refreshToken: string): Promise<LoginResultSu
     data: { revokedAt: new Date() },
   });
 
-  return issueTokens(payload.sub);
+  // Carry over session metadata from the old token so the session info stays consistent
+  const inheritedMetadata: LogEventOptions = {
+    ipAddress: stored.ipAddress ?? undefined,
+    userAgent: stored.userAgent ?? undefined,
+  };
+
+  return issueTokens(payload.sub, inheritedMetadata);
 }
 
 // ---------------------------------------------------------------------------
@@ -203,11 +213,23 @@ export async function refreshTokens(refreshToken: string): Promise<LoginResultSu
 /**
  * Revoke the provided refresh token, effectively logging the user out.
  */
-export async function logoutUser(refreshToken: string): Promise<void> {
-  await prisma.refreshToken.updateMany({
+export async function logoutUser(refreshToken: string, metadata?: LogEventOptions): Promise<void> {
+  const stored = await prisma.refreshToken.findFirst({
     where: { token: refreshToken, revokedAt: null },
-    data: { revokedAt: new Date() },
   });
+
+  if (stored) {
+    await prisma.refreshToken.update({
+      where: { id: stored.id },
+      data: { revokedAt: new Date() },
+    });
+    await logSecurityEvent(stored.userId, 'LOGOUT', metadata);
+  } else {
+    await prisma.refreshToken.updateMany({
+      where: { token: refreshToken, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +240,7 @@ export async function logoutUser(refreshToken: string): Promise<void> {
  * Initiate a password reset flow.
  * Always returns successfully to prevent user enumeration.
  */
-export async function forgotPassword(email: string): Promise<void> {
+export async function forgotPassword(email: string, metadata?: LogEventOptions): Promise<void> {
   const normalizedEmail = email.toLowerCase().trim();
   const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
 
@@ -237,13 +259,14 @@ export async function forgotPassword(email: string): Promise<void> {
     data: { token, userId: user.id, expiresAt },
   });
 
+  await logSecurityEvent(user.id, 'PASSWORD_RESET_REQUESTED', metadata);
   await sendPasswordResetEmail(normalizedEmail, token).catch(() => {/* silent */});
 }
 
 /**
  * Reset a user's password using a valid reset token.
  */
-export async function resetPassword(token: string, newPassword: string): Promise<void> {
+export async function resetPassword(token: string, newPassword: string, metadata?: LogEventOptions): Promise<void> {
   const record = await prisma.passwordResetToken.findUnique({
     where: { token },
     include: { user: true },
@@ -275,13 +298,15 @@ export async function resetPassword(token: string, newPassword: string): Promise
       data: { revokedAt: new Date() },
     }),
   ]);
+
+  await logSecurityEvent(record.userId, 'PASSWORD_CHANGED', metadata);
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function issueTokens(userId: string): Promise<LoginResultSuccess> {
+async function issueTokens(userId: string, metadata?: LogEventOptions): Promise<LoginResultSuccess> {
   const accessToken = generateAccessToken(userId);
   const { token: refreshToken } = generateRefreshToken(userId);
 
@@ -290,7 +315,13 @@ async function issueTokens(userId: string): Promise<LoginResultSuccess> {
   );
 
   await prisma.refreshToken.create({
-    data: { token: refreshToken, userId, expiresAt },
+    data: {
+      token: refreshToken,
+      userId,
+      expiresAt,
+      ipAddress: metadata?.ipAddress ?? null,
+      userAgent: metadata?.userAgent ?? null,
+    },
   });
 
   return { accessToken, refreshToken };

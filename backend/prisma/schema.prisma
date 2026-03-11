@@ -35,6 +35,7 @@ model User {
   biometricCredentials    BiometricCredential[]
   emailChangeTokens       EmailChangeToken[]
   preferences             UserPreferences?
+  securityLogs            SecurityLog[]
 }
 
 model EmailChangeToken {
@@ -88,16 +89,35 @@ model PasswordResetToken {
 }
 
 model RefreshToken {
-  id        String   @id @default(uuid())
-  token     String   @unique
-  userId    String
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime @default(now())
+  id         String    @id @default(uuid())
+  token      String    @unique
+  userId     String
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  userAgent  String?
+  ipAddress  String?
+  deviceName String?
+  lastUsedAt DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+model SecurityLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  eventType String
+  ipAddress String?
+  userAgent String?
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([createdAt])
 }
 
 model MfaBackupCode {
